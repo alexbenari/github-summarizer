@@ -5,6 +5,7 @@ what it does, what technologies are used, and how it's structured.
 ### Technical Requirements
 * Language: Python 3.10+
 * Web framework: FastAPI 
+* GitHub API client: `ghapi` (via internal `github-gate` adapter)
 * LLM: Nebius Token Factory API. [TBD: choose the LLM model to use]. API key is configured via the NEBIUS_API_KEY environment variable.
 * Endpoint
 	* Request 
