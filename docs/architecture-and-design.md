@@ -60,13 +60,12 @@ Invalid for v1:
 ### 4) End-to-End Flow
 1. `service` validates request schema and normalizes the URL.
 2. `github-gate` verifies repo identity and visibility.
-3. `github-gate` fetches baseline signals: repository metadata, language stats, directory tree (with sizes and file URLs), and README (if present).
-4. `repo-processor` estimates baseline token usage and computes remaining budget.
-5. `repo-processor` ranks additional candidates and requests them incrementally from `github-gate` (highest score first), stopping when budget/time limits are near.
-6. `repo-processor` finalizes a truncated/normalized repo digest.
-7. `llm-gate` sends structured prompt + selected repo digest.
-8. `llm-gate` validates/parses model output into response schema.
-9. `service` returns normalized API response.
+3. `github-gate` fetches all configured repository entities in one pass (subject to github-gate byte limits) and emits a full extraction markdown payload.
+4. `repo-processor` reads full extraction markdown and computes prompt repo-data budget from model context window.
+5. `repo-processor` applies deterministic truncation/allocation rules to produce prompt-ready markdown within budget.
+6. `llm-gate` sends structured prompt + processed repo markdown.
+7. `llm-gate` validates/parses model output into response schema.
+8. `service` returns normalized API response.
 
 ### 5) Module Design
 
@@ -97,8 +96,10 @@ Preferred upstream calls (GitHub REST API):
 - recursive tree for default branch
 - README content (if present)
 - documentation:
-  - if README has a direct documentation link, fetch only that single linked page
-  - also inspect `docs/` or `documentation/` directories and fetch contents within configured limits
+  - if repository "About" section has a website link (`homepage` in repo metadata), fetch that single page content only
+  - do not follow links from README for documentation crawling
+  - do not follow links found on the fetched "About" page
+  - inspect `docs/` or `documentation/` directories in the project tree and fetch contents within configured limits
 - targeted file content fetches (only selected files)
 
 Operational constraints:
@@ -123,8 +124,8 @@ Operational constraints:
 - `description`, `topics`, `homepage`
 - `languages` (actual language-by-bytes payload from GitHub)
 - `tree_entries` (path, type, size, api_url, download_url when applicable)
-- `readme` (optional; includes actual content text and source URL)
-- `documentation` (optional; includes source URL and fetched text/content when present)
+- `readme` (optional; includes actual content text)
+- `documentation` (optional; includes source URL and actual fetched text/content when present)
 
 Explicit `github-gate` interface (v1):
 - `parse_repo_url(github_url: str) -> RepoRef`
@@ -136,58 +137,66 @@ Explicit `github-gate` interface (v1):
 - `get_tree(repo: RepoRef) -> list[TreeEntry]`
 - `get_readme(repo: RepoRef) -> ReadmeData | None`
 - `get_file_content(repo: RepoRef, path: str) -> FileContent`
-- `get_documentation(tree: list[TreeEntry], readme: ReadmeData | None, limits: GithubGateLimits) -> DocumentationData | None`
-  - Fetches one direct README documentation link if present.
-  - Also scans for `docs/` or `documentation/` directories and fetches contents within configured limits.
+- `get_documentation(tree: list[TreeEntry], metadata: RepoMetadata, limits: GithubGateLimits) -> DocumentationData | None`
+  - If repository "About" section has a website link (`homepage`), fetch and extract that single page.
+  - Do not follow links from README for documentation crawling.
+  - Do not follow links on the fetched "About" page.
+  - Also scan for `docs/` or `documentation/` directories and fetch contents within configured limits.
 - `get_tests(tree: list[TreeEntry], limits: GithubGateLimits) -> list[FileContent]`
   - Finds likely test folders/files and returns test contents up to configured limits.
 - `get_code(tree: list[TreeEntry], limits: GithubGateLimits) -> list[FileContent]`
   - Returns likely main code files up to configured limits.
   - Attempts to include entry points first (`main.*`, `app.*`, `server.*`, common CLI entry files), then high-value core files.
 
-#### C) `repo-processor` (selection + budget manager)
+#### C) `repo-processor` (markdown budget manager)
 Responsibilities:
-- Determine what content is most informative
-- Exclude non-informative/binary/generated artifacts
-- Fit selected content into model input budget
+- Parse full extraction markdown from `github-gate`
+- Fit repository data into a strict prompt budget derived from model context
+- Preserve high-signal sections and apply deterministic truncation rules
 
 Input:
-- `RepoSnapshot`
-- config (`non-informative-files.json`, token policy)
-- target context size
+- full extraction markdown from `github-gate` CLI/adapter output
+- runtime config (`repo_processor` + model context settings)
 
 Output (`RepoDigest`):
-- normalized repository profile
-- compact directory tree summary
-- selected file snippets with paths
-- selection rationale metadata (for logging)
+- prompt-ready markdown with same core sections:
+  - `# Repository Metadata`
+  - `# Language Stats`
+  - `# Directory Tree`
+  - `# README`
+  - `# Documentation`
+  - `# Build and Package Data`
+  - `# Tests`
+  - `# Code`
+- processor stats may be captured internally for logging/debugging, not as markdown sections
 
-Selection strategy (ordered priority):
-1. README and top-level docs (`README*`, `docs/index*`, contribution/setup docs)
-2. Package/build metadata (`pyproject.toml`, `package.json`, `go.mod`, `Cargo.toml`, etc.)
-3. Entrypoints (`main.*`, `app.*`, `server.*`, CLI entry files)
-4. Core source files in dominant language directories
-5. Test and CI config (small representative subset)
+Budgeting model:
+- compute `max_repo_data_size_for_prompt_bytes` as:
+  - `floor(model_context_window_tokens * max_repo_data_ratio_in_prompt * bytes_per_token_estimate)`
+- defaults:
+  - `max_repo_data_ratio_in_prompt = 0.65`
+  - `bytes_per_token_estimate = 4`
+- `max_repo_data_ratio_in_prompt` and category weights are configurable
 
-Exclusion defaults:
-- lock/vendor/build artifacts (`node_modules`, `dist`, `build`, `.venv`, `vendor`, `.git`)
-- binary/media archives
-- very large generated files and minified bundles
-- known cache/temp directories
+Selection/truncation algorithm (v1):
+1. If full extraction markdown fits budget, pass it through unchanged.
+2. Otherwise always include `metadata`, `languages`, `tree`, `readme` first.
+3. If mandatory baseline exceeds budget:
+  - truncate README first to fit.
+  - if still over budget, truncate tree section deterministically from the end to fit.
+4. For remaining budget, allocate capacity by weighted categories (default):
+  - documentation `0.40`
+  - tests `0.20`
+  - build/package `0.20`
+  - code `0.20`
+5. If a category is smaller than its share, include it fully and redistribute leftover bytes to remaining categories proportionally to their relative weights.
+6. If a category is larger than its current share, truncate it to fit its allocated bytes.
+7. Preserve deterministic ordering from source markdown when trimming blocks.
 
-Token budgeting:
-- Use 70% of model context for repository digest
-- Reserve 30% for system instructions, output schema guidance, and model response
-- Character-to-token estimate: `tokens ~= chars / 4` (conservative)
-- Hard caps:
-  - max files selected
-  - max chars per file
-  - max total chars
-
-Truncation policy:
-- Prefer keeping headers, module docstrings, and exported API sections
-- Preserve path + line-range metadata for each snippet
-- Drop lowest-priority items first when budget is exceeded
+Block-level truncation:
+- treat each `## File: ...` block as atomic until final partial block is needed
+- when partial truncation is required, trim from the end of content text, keep file header/source/byte metadata lines
+- always keep valid markdown structure
 
 #### D) `llm-gate` (model adapter)
 Responsibilities:
@@ -197,7 +206,7 @@ Responsibilities:
 - Parse and validate structured output
 
 Input:
-- `RepoDigest`
+- processed repo markdown from `repo-processor`
 - prompt template
 - model/runtime options
 
@@ -245,14 +254,26 @@ Guardrails:
 `config/runtime.json` (or env-driven equivalent):
 - model id
 - model context window size
-- token budget ratios
-- max files / max file chars / timeout / retries
+- default checked-in values:
+  - `llm_gate.model_id = Qwen/Qwen3-30B-A3B-Thinking-2507`
+  - `llm_gate.model_context_window_tokens = 262000`
+- repo-processor budget settings:
+  - `max_repo_data_ratio_in_prompt` (default `0.65`)
+  - `bytes_per_token_estimate` (default `4`)
+  - category weights:
+    - `documentation_weight` (default `0.40`)
+    - `tests_weight` (default `0.20`)
+    - `build_package_weight` (default `0.20`)
+    - `code_weight` (default `0.20`)
+- llm/runtime settings:
+  - `max_output_tokens`
+  - timeouts / retries
 - github-gate extraction limits:
-  - max README-linked documentation pages fetched (v1 default: `1`)
-  - max docs directory files fetched
-  - max test files fetched
-  - max code files fetched
-  - large upper bound for per-document size cap (safety only; not expected to bind in normal use)
+  - `max_docs_total_bytes`
+  - `max_tests_total_bytes`
+  - `max_code_total_bytes`
+  - `max_build_package_total_bytes`
+  - `max_single_file_bytes` (safety cap)
 
 Environment variables:
 - `NEBIUS_API_KEY` (required)
@@ -297,6 +318,5 @@ Security in logs:
   - upstream failure simulation
 
 ### 11) Open Decisions to Finalize
-1. Exact Nebius model id for v1 (quality/latency/cost tradeoff)
-2. Whether to add optional GitHub token support in v1.1 for higher limits
-3. Whether to return optional confidence notes in API response (currently omitted)
+1. Whether to add optional GitHub token support in v1.1 for higher limits
+2. Whether to return optional confidence notes in API response (currently omitted)

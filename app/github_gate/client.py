@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import random
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from dataclasses import asdict
@@ -35,6 +34,7 @@ from .models import (
 from .selectors import (
     IgnoreRules,
     is_likely_text_path,
+    looks_like_build_package_path,
     looks_like_doc_path,
     looks_like_entrypoint,
     looks_like_test_path,
@@ -143,14 +143,11 @@ class GithubGate:
             )
 
         response = self._run_with_retry(_op, context=f"get_tree:{repo.owner}/{repo.repo}")
-        payload = dict(response)
-        items = payload.get("tree")
-        if not isinstance(items, list):
-            raise GithubResponseShapeError("Unexpected tree response shape.")
+        items = self._extract_tree_items(response)
 
         entries: list[TreeEntry] = []
         for item in items:
-            row = dict(item)
+            row = self._to_mapping(item)
             path = str(row.get("path") or "")
             entry_type = str(row.get("type") or "")
             if not path or entry_type not in {"blob", "tree"}:
@@ -227,16 +224,30 @@ class GithubGate:
     def get_documentation(
         self,
         tree: list[TreeEntry],
-        readme: Optional[ReadmeData],
+        metadata: RepoMetadata,
         limits: GithubGateLimits,
     ) -> Optional[DocumentationData]:
-        requested_paths: list[str] = []
+        selected_files: list[FileContent] = []
+        used_bytes = 0
         tree_map = {entry.path: entry for entry in tree if entry.type == "blob"}
 
-        if readme is not None and readme.content_text:
-            for linked_path in self._extract_direct_doc_links(readme.content_text)[: limits.max_readme_doc_links]:
-                if linked_path in tree_map:
-                    requested_paths.append(linked_path)
+        homepage_url = (metadata.homepage or "").strip()
+        if homepage_url:
+            try:
+                homepage_file = self._download_external_page(homepage_url=homepage_url)
+                if homepage_file.byte_size > limits.max_single_file_bytes:
+                    self.warnings.append(
+                        f"Skipped homepage documentation page: exceeds max_single_file_bytes ({homepage_url})."
+                    )
+                elif homepage_file.byte_size > limits.max_docs_total_bytes:
+                    self.warnings.append(
+                        f"Skipped homepage documentation page: exceeds max_docs_total_bytes ({homepage_url})."
+                    )
+                else:
+                    selected_files.append(homepage_file)
+                    used_bytes += homepage_file.byte_size
+            except Exception as exc:
+                self.warnings.append(f"Failed to fetch homepage documentation page ({homepage_url}): {exc}")
 
         doc_candidates = [
             entry
@@ -246,16 +257,15 @@ class GithubGate:
             and not self.ignore_rules.should_ignore_path(entry.path)
             and is_likely_text_path(entry.path)
         ]
-        for entry in sorted_bfs(doc_candidates):
-            if entry.path not in requested_paths:
-                requested_paths.append(entry.path)
-
-        files = self._collect_files_from_tree_paths(
+        ordered_paths = [entry.path for entry in sorted_bfs(doc_candidates)]
+        remaining_limit = max(0, limits.max_docs_total_bytes - used_bytes)
+        docs_from_tree = self._collect_files_from_tree_paths(
             tree_map=tree_map,
-            ordered_paths=requested_paths,
-            total_limit=limits.max_docs_total_bytes,
+            ordered_paths=ordered_paths,
+            total_limit=remaining_limit,
             single_limit=limits.max_single_file_bytes,
         )
+        files = selected_files + docs_from_tree
         if not files:
             return None
         total_bytes = sum(item.byte_size for item in files)
@@ -307,14 +317,47 @@ class GithubGate:
             single_limit=limits.max_single_file_bytes,
         )
 
-    def build_snapshot(self, repo: RepoRef, include_documentation: bool = False) -> RepoSnapshot:
+    def get_build_and_package_data(self, tree: list[TreeEntry], limits: GithubGateLimits) -> list[FileContent]:
+        candidates = [
+            entry
+            for entry in tree
+            if entry.type == "blob"
+            and looks_like_build_package_path(entry.path)
+            and not self.ignore_rules.should_ignore_path(entry.path)
+            and is_likely_text_path(entry.path)
+        ]
+        ordered = sorted(
+            candidates,
+            key=lambda entry: (
+                0 if "/" not in entry.path else 1,
+                entry.path.count("/"),
+                entry.path.lower(),
+            ),
+        )
+        tree_map = {entry.path: entry for entry in ordered}
+        return self._collect_files_from_tree_paths(
+            tree_map=tree_map,
+            ordered_paths=[entry.path for entry in ordered],
+            total_limit=limits.max_build_package_total_bytes,
+            single_limit=limits.max_single_file_bytes,
+        )
+
+    def build_snapshot(
+        self,
+        repo: RepoRef,
+        include_documentation: bool = False,
+        include_build_and_package: bool = False,
+    ) -> RepoSnapshot:
         metadata = self.get_repo_metadata(repo)
         languages = self.get_languages(repo)
         tree = self.get_tree(repo)
         readme = self.get_readme(repo)
         documentation = None
+        build_and_package_files: list[FileContent] = []
         if include_documentation:
-            documentation = self.get_documentation(tree=tree, readme=readme, limits=self.limits)
+            documentation = self.get_documentation(tree=tree, metadata=metadata, limits=self.limits)
+        if include_build_and_package:
+            build_and_package_files = self.get_build_and_package_data(tree=tree, limits=self.limits)
 
         return RepoSnapshot(
             owner=metadata.owner,
@@ -327,6 +370,7 @@ class GithubGate:
             tree_entries=tree,
             readme=readme,
             documentation=documentation,
+            build_and_package_files=build_and_package_files,
         )
 
     def to_plain_dict(self, snapshot: RepoSnapshot) -> dict[str, Any]:
@@ -384,24 +428,27 @@ class GithubGate:
         byte_size = len(text.encode("utf-8"))
         return FileContent(path=path, source_url=download_url, content_text=text, byte_size=byte_size)
 
-    def _extract_direct_doc_links(self, readme_text: str) -> list[str]:
-        links = re.findall(r"\[[^\]]+\]\(([^)]+)\)", readme_text)
-        doc_links: list[str] = []
-        for link in links:
-            cleaned = link.strip().split("#")[0].split("?")[0]
-            if not cleaned:
-                continue
-            lower = cleaned.lower()
-            if "docs/" in lower or "documentation/" in lower or lower.startswith("docs/"):
-                parsed = urlparse(cleaned)
-                if parsed.scheme in {"http", "https"}:
-                    path_parts = [p for p in parsed.path.split("/") if p]
-                    # github.com/{owner}/{repo}/blob/{branch}/{path...}
-                    if len(path_parts) >= 5 and path_parts[2] in {"blob", "raw"}:
-                        doc_links.append("/".join(path_parts[4:]))
-                    continue
-                doc_links.append(cleaned.lstrip("./"))
-        return doc_links
+    def _download_external_page(self, homepage_url: str) -> FileContent:
+        parsed = urlparse(homepage_url)
+        if parsed.scheme not in {"http", "https"}:
+            raise GithubResponseShapeError("Homepage URL must be http(s).", context=homepage_url)
+        body_bytes = self._run_with_retry(
+            op=lambda: self._http_get_bytes(homepage_url),
+            context=f"download_homepage:{homepage_url}",
+        )
+        if b"\x00" in body_bytes:
+            raise GithubResponseShapeError("Homepage appears to be binary.", context=homepage_url)
+        try:
+            content_text = body_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise GithubResponseShapeError("Unable to decode homepage as UTF-8.", context=str(exc)) from exc
+        byte_size = len(content_text.encode("utf-8"))
+        return FileContent(
+            path="about-homepage",
+            source_url=homepage_url,
+            content_text=content_text,
+            byte_size=byte_size,
+        )
 
     def _new_api(self) -> GhApi:
         return GhApi(timeout=(self.connect_timeout_seconds, self.read_timeout_seconds))
@@ -510,6 +557,65 @@ class GithubGate:
         req = urlrequest.Request(url=url, method="GET")
         with urlrequest.urlopen(req, timeout=self.read_timeout_seconds) as response:
             return response.read()
+
+    def _to_mapping(self, obj: Any) -> dict[str, Any]:
+        if isinstance(obj, dict):
+            return obj
+        if hasattr(obj, "items"):
+            try:
+                return {str(k): v for k, v in obj.items()}  # type: ignore[call-arg]
+            except Exception:
+                pass
+        if hasattr(obj, "__dict__"):
+            return dict(vars(obj))
+        raise GithubResponseShapeError("Unable to convert response item to mapping.")
+
+    def _extract_tree_items(self, response: Any) -> list[Any]:
+        if isinstance(response, list):
+            return list(response)
+
+        candidates: list[Any] = []
+
+        try:
+            payload = self._to_mapping(response)
+            candidates.append(payload.get("tree"))
+            candidates.append(payload.get("items"))
+            candidates.append(payload.get("data"))
+        except GithubResponseShapeError:
+            payload = None
+
+        for attr_name in ("tree", "items", "data"):
+            if hasattr(response, attr_name):
+                candidates.append(getattr(response, attr_name))
+
+        if payload and isinstance(payload.get("data"), dict):
+            data_map = payload["data"]
+            candidates.append(data_map.get("tree"))
+            candidates.append(data_map.get("items"))
+        elif payload and payload.get("data") is not None:
+            data_obj = payload.get("data")
+            for attr_name in ("tree", "items"):
+                if hasattr(data_obj, attr_name):
+                    candidates.append(getattr(data_obj, attr_name))
+
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            if isinstance(candidate, list):
+                return candidate
+            if isinstance(candidate, tuple):
+                return list(candidate)
+            if hasattr(candidate, "__iter__") and not isinstance(candidate, (str, bytes, dict)):
+                try:
+                    return list(candidate)
+                except Exception:
+                    pass
+
+        shape = type(response).__name__
+        raise GithubResponseShapeError(
+            "Unexpected tree response shape.",
+            context=f"type={shape}",
+        )
 
 
 def GithubGateExceptionTypes() -> tuple[type[Exception], ...]:

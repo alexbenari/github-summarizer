@@ -39,7 +39,7 @@ Implement these methods in `github-gate`:
 - `get_tree(repo: RepoRef) -> list[TreeEntry]`
 - `get_readme(repo: RepoRef) -> ReadmeData | None`
 - `get_file_content(repo: RepoRef, path: str) -> FileContent`
-- `get_documentation(tree: list[TreeEntry], readme: ReadmeData | None, limits: GithubGateLimits) -> DocumentationData | None`
+- `get_documentation(tree: list[TreeEntry], metadata: RepoMetadata, limits: GithubGateLimits) -> DocumentationData | None`
 - `get_tests(tree: list[TreeEntry], limits: GithubGateLimits) -> list[FileContent]`
 - `get_code(tree: list[TreeEntry], limits: GithubGateLimits) -> list[FileContent]`
 
@@ -99,7 +99,9 @@ Define explicit dataclasses or pydantic models (your choice) for:
 
 ### Extraction Rules
 - `get_documentation`:
-  - from README, follow at most one direct documentation link
+  - if repository "About" section has a link (`homepage` from repo metadata), fetch that single page content
+  - do not follow links from README for documentation crawling
+  - do not follow links found on the fetched "About" page
   - inspect `docs/` and `documentation/` directories and fetch contents within limits
 - `get_tests`:
   - locate likely test paths (`tests/`, `test/`, `*_test.*`, `test_*.*`)
@@ -112,7 +114,6 @@ Define explicit dataclasses or pydantic models (your choice) for:
 
 ### Limits (Byte-Based)
 Support config values (with defaults):
-- `max_readme_doc_links` (default: `1`)
 - `max_docs_total_bytes`
 - `max_tests_total_bytes`
 - `max_code_total_bytes`

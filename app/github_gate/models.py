@@ -78,14 +78,15 @@ class RepoSnapshot:
     tree_entries: list[TreeEntry]
     readme: Optional[ReadmeData] = None
     documentation: Optional[DocumentationData] = None
+    build_and_package_files: list[FileContent] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class GithubGateLimits:
-    max_readme_doc_links: int = 1
     max_docs_total_bytes: int = 250_000
     max_tests_total_bytes: int = 250_000
     max_code_total_bytes: int = 400_000
+    max_build_package_total_bytes: int = 200_000
     max_single_file_bytes: int = 100_000
 
     @classmethod
@@ -99,9 +100,11 @@ class GithubGateLimits:
         data = json.loads(runtime_path.read_text(encoding="utf-8"))
         section = data.get("github_gate", {})
         return cls(
-            max_readme_doc_links=int(section.get("max_readme_doc_links", cls.max_readme_doc_links)),
             max_docs_total_bytes=int(section.get("max_docs_total_bytes", cls.max_docs_total_bytes)),
             max_tests_total_bytes=int(section.get("max_tests_total_bytes", cls.max_tests_total_bytes)),
             max_code_total_bytes=int(section.get("max_code_total_bytes", cls.max_code_total_bytes)),
+            max_build_package_total_bytes=int(
+                section.get("max_build_package_total_bytes", cls.max_build_package_total_bytes)
+            ),
             max_single_file_bytes=int(section.get("max_single_file_bytes", cls.max_single_file_bytes)),
         )

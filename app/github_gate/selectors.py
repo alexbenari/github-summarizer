@@ -152,6 +152,42 @@ def looks_like_entrypoint(path: str) -> bool:
     return stem in ENTRYPOINT_NAMES
 
 
+def looks_like_build_package_path(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    lower = normalized.lower()
+    filename = lower.split("/")[-1]
+
+    exact_names = {
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "requirements.txt",
+        "pipfile",
+        "package.json",
+        "tsconfig.json",
+        "pnpm-workspace.yaml",
+        "go.mod",
+        "cargo.toml",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "composer.json",
+        "gemfile",
+        "makefile",
+        "dockerfile",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        ".gitlab-ci.yml",
+    }
+    if filename in exact_names:
+        return True
+
+    if fnmatch.fnmatch(filename, "requirements-*.txt"):
+        return True
+
+    return False
+
+
 def path_depth(path: str) -> int:
     return path.count("/")
 

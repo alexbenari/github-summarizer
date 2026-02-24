@@ -8,3 +8,6 @@ __pycache__/
 venv/
 env/
 ENV/
+
+# Generated CLI outputs
+outputs/

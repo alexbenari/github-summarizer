@@ -17,6 +17,7 @@ This document captures deferred work after Phase 2 core implementation.
 6. Add integration-like tests with mocked `ghapi` responses.
 7. Add CLI contract tests (golden-file markdown snapshots).
 8. Add negative tests for malformed upstream payloads and mapping to typed exceptions.
+9. Add optional env-var gate for live smoke test execution (`RUN_LIVE_GITHUB_SMOKE=1`) for CI stability control.
 
 ## Test Matrix
 
@@ -44,7 +45,7 @@ This document captures deferred work after Phase 2 core implementation.
 - estimated tokens tracked as `bytes / 4` (conservative)
 
 ### Extraction Behavior
-- one direct README doc link max
+- one About/homepage documentation page max (no recursive link-following)
 - docs directory discovery
 - test path detection
 - entrypoint-first code extraction followed by BFS
@@ -65,3 +66,4 @@ This document captures deferred work after Phase 2 core implementation.
 - Tests pass in CI/local without live GitHub dependency.
 - Deterministic output for selector and CLI contract tests.
 - Exception and retry behavior aligned with `docs/architecture-and-design.md`.
+- Live smoke test can be toggled off by default in CI and enabled explicitly via env var.

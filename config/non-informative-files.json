@@ -18,6 +18,8 @@
     ".next",
     ".nuxt",
     ".terraform",
+    "_templates",
+    "_themes",
     "tmp",
     "temp"
   ],
@@ -72,6 +74,7 @@
     ".DS_Store"
   ],
   "ignored_globs": [
+    ".*",
     "*.min.js",
     "*.min.css",
     "*.map",

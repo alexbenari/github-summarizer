@@ -21,7 +21,7 @@ SECTION_ORDER = [
     "warnings",
 ]
 
-ENTITY_NAMES = {"metadata", "languages", "tree", "readme", "documentation", "tests", "code"}
+ENTITY_NAMES = {"metadata", "languages", "tree", "readme", "documentation", "build_package", "tests", "code"}
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -30,14 +30,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--entities",
         required=True,
-        help="Comma-separated subset of metadata,languages,tree,readme,documentation,tests,code or all",
+        help="Comma-separated subset of metadata,languages,tree,readme,documentation,build_package,tests,code or all",
     )
-    parser.add_argument("--output", required=True, help="Markdown output path.")
+    parser.add_argument(
+        "--output",
+        required=False,
+        default=None,
+        help="Markdown output path. Default: outputs/<owner>-<repo>.md",
+    )
     parser.add_argument("--max-docs-total-bytes", type=int, default=None)
     parser.add_argument("--max-tests-total-bytes", type=int, default=None)
     parser.add_argument("--max-code-total-bytes", type=int, default=None)
+    parser.add_argument("--max-build-package-total-bytes", type=int, default=None)
     parser.add_argument("--max-single-file-bytes", type=int, default=None)
-    parser.add_argument("--max-readme-doc-links", type=int, default=None)
     return parser.parse_args(argv)
 
 
@@ -46,7 +51,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     client = GithubGate()
 
     try:
+        _log("Parsing repository URL")
         repo = client.parse_repo_url(args.github_url)
+        _log(f"Verifying repository access: {repo.owner}/{repo.repo}")
         client.verify_repo_access(repo)
     except GithubGateError as exc:
         print(str(exc), file=sys.stderr)
@@ -58,41 +65,113 @@ def main(argv: Optional[list[str]] = None) -> int:
     results: dict[str, object] = {}
     warnings: list[str] = []
 
-    try:
-        metadata = None
-        if "metadata" in requested or "tree" in requested or "readme" in requested:
-            metadata = client.get_repo_metadata(repo)
-        if "metadata" in requested:
-            results["metadata"] = metadata
+    metadata = None
+    if "metadata" in requested or "tree" in requested or "readme" in requested or "documentation" in requested:
+        _log("Fetching repository metadata")
+        metadata = _best_effort_call(
+            call=lambda: client.get_repo_metadata(repo),
+            warnings=warnings,
+            label="metadata",
+            default=None,
+        )
+    if "metadata" in requested:
+        results["metadata"] = metadata
 
-        if "languages" in requested:
-            results["languages"] = client.get_languages(repo)
+    if "languages" in requested:
+        _log("Fetching language stats")
+        results["languages"] = _best_effort_call(
+            call=lambda: client.get_languages(repo),
+            warnings=warnings,
+            label="languages",
+            default={},
+        )
 
-        tree = None
-        if any(name in requested for name in {"tree", "documentation", "tests", "code"}):
-            tree = client.get_tree(repo)
-        if "tree" in requested:
-            results["tree"] = tree
+    tree = None
+    if any(name in requested for name in {"tree", "documentation", "build_package", "tests", "code"}):
+        _log("Fetching repository tree")
+        tree = _best_effort_call(
+            call=lambda: client.get_tree(repo),
+            warnings=warnings,
+            label="tree",
+            default=None,
+        )
+    if "tree" in requested:
+        results["tree"] = tree
 
-        readme = None
-        if "readme" in requested or "documentation" in requested:
-            readme = client.get_readme(repo)
-        if "readme" in requested:
-            results["readme"] = readme
+    readme = None
+    if "readme" in requested:
+        _log("Fetching README")
+        readme = _best_effort_call(
+            call=lambda: client.get_readme(repo),
+            warnings=warnings,
+            label="readme",
+            default=None,
+        )
+    if "readme" in requested:
+        results["readme"] = readme
 
-        if "documentation" in requested:
-            results["documentation"] = client.get_documentation(tree=tree or [], readme=readme, limits=limits)
-        if "tests" in requested:
-            results["tests"] = client.get_tests(tree=tree or [], limits=limits)
-        if "code" in requested:
-            results["code"] = client.get_code(tree=tree or [], limits=limits)
-    except GithubGateError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
+    if "documentation" in requested:
+        _log("Extracting documentation files")
+        if tree is None:
+            warnings.append("documentation: skipped because tree is unavailable")
+            results["documentation"] = None
+        elif metadata is None:
+            warnings.append("documentation: skipped because metadata is unavailable")
+            results["documentation"] = None
+        else:
+            results["documentation"] = _best_effort_call(
+                call=lambda: client.get_documentation(tree=tree, metadata=metadata, limits=limits),
+                warnings=warnings,
+                label="documentation",
+                default=None,
+            )
+
+    if "build_package" in requested:
+        _log("Extracting build/package files")
+        if tree is None:
+            warnings.append("build_package: skipped because tree is unavailable")
+            results["build_package"] = []
+        else:
+            results["build_package"] = _best_effort_call(
+                call=lambda: client.get_build_and_package_data(tree=tree, limits=limits),
+                warnings=warnings,
+                label="build_package",
+                default=[],
+            )
+
+    if "tests" in requested:
+        _log("Extracting test files")
+        if tree is None:
+            warnings.append("tests: skipped because tree is unavailable")
+            results["tests"] = []
+        else:
+            results["tests"] = _best_effort_call(
+                call=lambda: client.get_tests(tree=tree, limits=limits),
+                warnings=warnings,
+                label="tests",
+                default=[],
+            )
+
+    if "code" in requested:
+        _log("Extracting code files")
+        if tree is None:
+            warnings.append("code: skipped because tree is unavailable")
+            results["code"] = []
+        else:
+            results["code"] = _best_effort_call(
+                call=lambda: client.get_code(tree=tree, limits=limits),
+                warnings=warnings,
+                label="code",
+                default=[],
+            )
 
     warnings.extend(client.warnings)
+    _log("Rendering markdown output")
     markdown = _render_markdown(repo=repo, requested=requested, results=results, warnings=warnings)
-    Path(args.output).write_text(markdown, encoding="utf-8")
+    output_path = _resolve_output_path(repo=repo, raw_output=args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(markdown, encoding="utf-8")
+    print(f"Wrote extraction output to {output_path}")
     return 0
 
 
@@ -109,12 +188,34 @@ def _parse_entities(raw: str) -> set[str]:
 
 def _effective_limits(base: GithubGateLimits, args: argparse.Namespace) -> GithubGateLimits:
     return GithubGateLimits(
-        max_readme_doc_links=args.max_readme_doc_links or base.max_readme_doc_links,
         max_docs_total_bytes=args.max_docs_total_bytes or base.max_docs_total_bytes,
         max_tests_total_bytes=args.max_tests_total_bytes or base.max_tests_total_bytes,
         max_code_total_bytes=args.max_code_total_bytes or base.max_code_total_bytes,
+        max_build_package_total_bytes=args.max_build_package_total_bytes or base.max_build_package_total_bytes,
         max_single_file_bytes=args.max_single_file_bytes or base.max_single_file_bytes,
     )
+
+
+def _resolve_output_path(repo: RepoRef, raw_output: Optional[str]) -> Path:
+    if raw_output and raw_output.strip():
+        return Path(raw_output).expanduser().resolve()
+    filename = f"{repo.owner.lower()}-{repo.repo.lower()}.md"
+    return (Path.cwd() / "outputs" / filename).resolve()
+
+
+def _log(message: str) -> None:
+    print(f"[github-gate-cli] {message}")
+
+
+def _best_effort_call(call, warnings: list[str], label: str, default):
+    try:
+        return call()
+    except GithubGateError as exc:
+        warnings.append(f"{label}: {exc}")
+        return default
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"{label}: unexpected error: {exc}")
+        return default
 
 
 def _render_markdown(repo: RepoRef, requested: set[str], results: dict[str, object], warnings: list[str]) -> str:
@@ -176,6 +277,24 @@ def _render_markdown(repo: RepoRef, requested: set[str], results: dict[str, obje
             lines.append("Not found")
         else:
             for file_data in doc_data.files:
+                _render_file_block(
+                    lines,
+                    path_or_label=file_data.path,
+                    source=file_data.source_url,
+                    content=file_data.content_text,
+                    byte_size=file_data.byte_size,
+                )
+
+    lines.append("")
+    lines.append("# Build and Package Data")
+    if "build_package" not in requested:
+        lines.append("Not requested")
+    else:
+        build_files: list[FileContent] = results.get("build_package", [])  # type: ignore[assignment]
+        if not build_files:
+            lines.append("Not found")
+        else:
+            for file_data in build_files:
                 _render_file_block(
                     lines,
                     path_or_label=file_data.path,
@@ -258,6 +377,7 @@ def _render_stats(lines: list[str], results: dict[str, object]) -> None:
         "documentation_bytes": 0,
         "tests_bytes": 0,
         "code_bytes": 0,
+        "build_package_bytes": 0,
     }
     readme: Optional[ReadmeData] = results.get("readme")  # type: ignore[assignment]
     if readme is not None:
@@ -271,9 +391,11 @@ def _render_stats(lines: list[str], results: dict[str, object]) -> None:
     totals["tests_bytes"] = sum(item.byte_size for item in tests)
     code_files: list[FileContent] = results.get("code", [])  # type: ignore[assignment]
     totals["code_bytes"] = sum(item.byte_size for item in code_files)
+    build_files: list[FileContent] = results.get("build_package", [])  # type: ignore[assignment]
+    totals["build_package_bytes"] = sum(item.byte_size for item in build_files)
 
     grand_total = sum(totals.values())
-    for key in ("readme_bytes", "documentation_bytes", "tests_bytes", "code_bytes"):
+    for key in ("readme_bytes", "documentation_bytes", "tests_bytes", "code_bytes", "build_package_bytes"):
         lines.append(f"- {key}: {totals[key]}")
         lines.append(f"- {key.replace('_bytes', '_estimated_tokens')}: {estimated_tokens_for_bytes(totals[key])}")
     lines.append(f"- total_utf8_bytes: {grand_total}")

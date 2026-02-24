@@ -16,14 +16,14 @@ Hard rules:
 5) If evidence is incomplete, state uncertainty explicitly in summary/structure text.
 
 Content rules:
-- summary: 2-5 sentences, max 900 characters.
+- summary: 2-5 sentences.
 - technologies: list the main languages/frameworks/libraries evidenced in the digest.
   - deduplicate
   - max 20 items
   - order from most central to least central
   - do not include vague terms (e.g., "software", "project")
-- structure: 2-6 sentences, max 900 characters.
-  - describe layout based on actual paths/directories/files shown
+- structure: 2-6 sentences.
+  - describe the repo/project structre: e.g. "project follows a standrad structure for [language/technology X]. Entry point is in [], tests are in []. Additionally, there are ..."
   - mention key folders and entry points when present
 ```
 
@@ -36,8 +36,7 @@ Content rules:
   "properties": {
     "summary": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 900
+      "minLength": 1
     },
     "technologies": {
       "type": "array",
@@ -50,8 +49,7 @@ Content rules:
     },
     "structure": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 900
+      "minLength": 1
     }
   }
 }
@@ -73,6 +71,9 @@ README:
 
 Documentation:
 {documentation_text}
+
+Build and package data:
+{build_package_text}
 
 Selected code snippets:
 {code_snippets}
