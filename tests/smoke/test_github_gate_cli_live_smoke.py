@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 import re
 
+import pytest
+
 
 def test_github_gate_cli_live_smoke(tmp_path: Path) -> None:
     output_path = tmp_path / "requests-cli-output.md"
@@ -23,7 +25,19 @@ def test_github_gate_cli_live_smoke(tmp_path: Path) -> None:
     result = subprocess.run(command, capture_output=True, text=True, timeout=180)
     failure_details = f"\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
 
-    assert result.returncode == 0, f"CLI exited with non-zero status.{failure_details}"
+    if result.returncode != 0:
+        combined = f"{result.stdout}\n{result.stderr}".lower()
+        transient_signals = (
+            "github_upstream_error",
+            "github_timeout",
+            "network failure while talking to github",
+            "timed out",
+            "temporary failure",
+        )
+        if any(signal in combined for signal in transient_signals):
+            pytest.skip(f"Live GitHub smoke skipped due transient upstream/network failure.{failure_details}")
+        pytest.fail(f"CLI exited with non-zero status.{failure_details}")
+
     assert output_path.exists(), f"Output markdown file was not created.{failure_details}"
     content = output_path.read_text(encoding="utf-8")
     assert content.strip(), f"Output markdown file is empty.{failure_details}"

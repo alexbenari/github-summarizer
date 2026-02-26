@@ -11,3 +11,6 @@ ENV/
 
 # Generated CLI outputs
 outputs/
+
+# Service request debug logs
+logs/

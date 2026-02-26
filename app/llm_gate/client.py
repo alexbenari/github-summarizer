@@ -101,14 +101,20 @@ class LlmGate:
                 elif status in NON_RETRYABLE_STATUSES:
                     raise LlmUpstreamError("LLM upstream non-retryable failure.", upstream_status=status) from exc
                 elif isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, OSError)):
-                    last_exc = LlmUpstreamError("Network failure while calling LLM.", context=context)
+                    last_exc = LlmUpstreamError(
+                        "Network failure while calling LLM.",
+                        context=f"{context}: {exc}",
+                    )
                     should_retry = attempt < attempts
                 elif isinstance(exc, LlmOutputValidationError):
                     raise
                 elif isinstance(exc, LlmConfigError):
                     raise
                 else:
-                    raise LlmUpstreamError("Unexpected LLM adapter error.", context=str(exc)) from exc
+                    raise LlmUpstreamError(
+                        "Unexpected LLM adapter error.",
+                        context=f"{context}: {exc}",
+                    ) from exc
 
             if should_retry:
                 backoff_idx = min(attempt - 1, len(cfg.retry_backoff_seconds) - 1)

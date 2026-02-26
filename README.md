@@ -2,6 +2,7 @@
 
 ## Prerequisites
 - Python 3.10+
+- `NEBIUS_API_KEY` environment variable set
 
 ## Setup and Run
 
@@ -93,8 +94,18 @@ curl -X POST "http://localhost:8000/summarize" -H "Content-Type: application/jso
 The API is available at `http://localhost:8000`.
 
 ## Current Phase Behavior
-This is Phase 1 skeleton behavior:
+`POST /summarize` is fully integrated and returns:
 
 ```json
-{"status":"error","message":"Not implemented"}
+{
+  "summary": "...",
+  "technologies": ["..."],
+  "structure": "..."
+}
+```
+
+Validation and known error responses use:
+
+```json
+{"status":"error","message":"..."}
 ```

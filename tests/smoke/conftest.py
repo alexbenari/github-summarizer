@@ -1,5 +1,6 @@
 import json
 import importlib.util
+import os
 import socket
 import subprocess
 import sys
@@ -59,6 +60,7 @@ def live_server() -> Generator[str, None, None]:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env={**os.environ, "NEBIUS_API_KEY": os.environ.get("NEBIUS_API_KEY", "test-key")},
     )
 
     try:

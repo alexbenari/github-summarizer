@@ -235,17 +235,26 @@ class GithubGate:
         if homepage_url:
             try:
                 homepage_file = self._download_external_page(homepage_url=homepage_url)
-                if homepage_file.byte_size > limits.max_single_file_bytes:
+                homepage_budget = max(0, limits.max_docs_total_bytes - used_bytes)
+                allowed_bytes = min(limits.max_single_file_bytes, homepage_budget)
+                if allowed_bytes <= 0:
                     self.warnings.append(
-                        f"Skipped homepage documentation page: exceeds max_single_file_bytes ({homepage_url})."
-                    )
-                elif homepage_file.byte_size > limits.max_docs_total_bytes:
-                    self.warnings.append(
-                        f"Skipped homepage documentation page: exceeds max_docs_total_bytes ({homepage_url})."
+                        f"Skipped homepage documentation page: no remaining docs byte budget ({homepage_url})."
                     )
                 else:
-                    selected_files.append(homepage_file)
-                    used_bytes += homepage_file.byte_size
+                    homepage_file, was_truncated = self._truncate_file_to_max_bytes(homepage_file, allowed_bytes)
+                    if homepage_file.byte_size <= 0:
+                        self.warnings.append(
+                            f"Skipped homepage documentation page: empty after truncation ({homepage_url})."
+                        )
+                    else:
+                        if was_truncated:
+                            self.warnings.append(
+                                "Trimmed homepage documentation page from end to fit limits "
+                                f"({homepage_url}, kept={homepage_file.byte_size} bytes)."
+                            )
+                        selected_files.append(homepage_file)
+                        used_bytes += homepage_file.byte_size
             except Exception as exc:
                 self.warnings.append(f"Failed to fetch homepage documentation page ({homepage_url}): {exc}")
 
@@ -450,6 +459,23 @@ class GithubGate:
             byte_size=byte_size,
         )
 
+    def _truncate_file_to_max_bytes(self, item: FileContent, max_bytes: int) -> tuple[FileContent, bool]:
+        if max_bytes <= 0:
+            return FileContent(path=item.path, source_url=item.source_url, content_text="", byte_size=0), True
+        if item.byte_size <= max_bytes:
+            return item, False
+        truncated_text = self._truncate_utf8_prefix(item.content_text, max_bytes)
+        truncated_bytes = len(truncated_text.encode("utf-8"))
+        return (
+            FileContent(
+                path=item.path,
+                source_url=item.source_url,
+                content_text=truncated_text,
+                byte_size=truncated_bytes,
+            ),
+            True,
+        )
+
     def _new_api(self) -> GhApi:
         return GhApi(timeout=(self.connect_timeout_seconds, self.read_timeout_seconds))
 
@@ -557,6 +583,14 @@ class GithubGate:
         req = urlrequest.Request(url=url, method="GET")
         with urlrequest.urlopen(req, timeout=self.read_timeout_seconds) as response:
             return response.read()
+
+    def _truncate_utf8_prefix(self, text: str, max_bytes: int) -> str:
+        if max_bytes <= 0:
+            return ""
+        encoded = text.encode("utf-8")
+        if len(encoded) <= max_bytes:
+            return text
+        return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
     def _to_mapping(self, obj: Any) -> dict[str, Any]:
         if isinstance(obj, dict):

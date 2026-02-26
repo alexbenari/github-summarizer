@@ -1,10 +1,10 @@
 # RESUME-CODING
 
 ## Session Snapshot
-- Date: 2026-02-21
+- Date: 2026-02-25
 - Project: GitHub repository summarizer API
-- Active phase: Phase 4 (`llm-gate` core + CLI)
-- Status: Phase 4 scope implemented
+- Active phase: Phase 5 (integration kickoff)
+- Status: Phase 5 scope implemented
 
 ## Phase 1 Scope Implemented
 - Added FastAPI skeleton service exposing `POST /summarize`.
@@ -111,6 +111,28 @@
 - Updated `config/runtime.json` `llm_gate` settings with defaults from phase spec.
 - Added explicit `httpx` dependency to `requirements.txt`.
 
+## Phase 5 Scope Implemented
+- Replaced `/summarize` stub with end-to-end orchestration in `app/main.py`:
+  - parse URL
+  - verify repo access
+  - fetch full github-gate entity set (`all`)
+  - render extraction markdown
+  - process with repo-processor
+  - fallback to full extraction on `RepoProcessorBudgetError`
+  - call llm-gate summarize
+  - return `{summary, technologies, structure}`
+- Added startup validation with `ConfigValidator.validate_startup()`:
+  - validates `LlmGateConfig`, `RepoProcessorConfig`, and `GithubGateLimits`
+  - requires non-empty `NEBIUS_API_KEY`
+- Added explicit HTTP exception mappings in FastAPI, including `RequestValidationError -> 400`.
+- Added service progress logs with request id and per-request debug log files under `logs/`.
+- Extracted github extraction markdown rendering into reusable module:
+  - `app/github_gate/markdown_renderer.py`
+  - reused from github-gate CLI and service integration path.
+- Added API integration tests for:
+  - successful orchestration call order + response contract
+  - invalid GitHub URL mapping to HTTP 400.
+
 ## Files Touched In Phase 2
 - `app/__init__.py` (new)
 - `app/github_gate/__init__.py` (new)
@@ -159,13 +181,15 @@
    - `.\.venv\Scripts\Activate.ps1`
 3. Install deps:
    - `pip install -r requirements.txt`
-4. Start server:
+4. Set API key (PowerShell):
+   - `$env:NEBIUS_API_KEY="your_key_here"`
+5. Start server:
    - `uvicorn app.main:app --host 0.0.0.0 --port 8000`
-5. Smoke test:
+6. Smoke test:
    - `curl.exe --% -X POST http://localhost:8000/summarize -H "Content-Type: application/json" --data-raw "{\"github_url\":\"https://github.com/psf/requests\"}"`
 
-Expected current response:
-- `{"status":"error","message":"Not implemented"}`
+Expected success response shape:
+- `{"summary":"...","technologies":["..."],"structure":"..."}`
 
 ## Open Decisions (Still Tracked)
 1. Exact Nebius model id for v1.
@@ -173,9 +197,7 @@ Expected current response:
 3. Whether to expose confidence/uncertainty metadata in API response.
 
 ## Next Likely Phase
-- Integrate `github-gate` + `repo-processor` + `llm-gate` into service `/summarize` orchestration.
-- Add unit tests for llm-gate parser/prompt rendering/output validation.
-- Add integration tests for non-happy-path HTTP error mapping across modules.
+- Expand integration/error-path test matrix and harden lifecycle/logging behavior.
 
 ## Continuation Log
 - 2026-02-21: Initialized resume file and documented pre-implementation state.
@@ -197,6 +219,14 @@ Expected current response:
   - strict output type checks (no `str(...)` coercion),
   - malformed digest markdown now raises `LlmDigestParseError`,
   - retryable upstream 502/503/504 now map to `LlmUpstreamError` (429 remains `LlmRateLimitError`).
+- 2026-02-25: Implemented Phase 5 integration kickoff:
+  - wired `/summarize` to github-gate -> repo-processor -> llm-gate
+  - added startup config validator
+  - added explicit HTTP error mappings including request validation 400
+  - added shared markdown renderer for github-gate CLI + service
+  - added per-request debug logs and console milestone logs
+  - added API integration tests with monkeypatched boundaries and call-order assertions
+  - updated smoke test expectations to 400 for invalid URL.
 
 ## Manual Validation Results (Phase 2)
 - ✅ `app/github_gate/*` modules parse successfully (`ast.parse` syntax check).
@@ -221,6 +251,15 @@ Expected current response:
   - `llm_config_error: NEBIUS_API_KEY is required.`
 - ✅ Existing service smoke remains green after llm-gate changes:
   - `python -m pytest tests/smoke/test_service_smoke.py -q`.
+
+## Manual Validation Results (Phase 5)
+- ✅ `python -m pytest tests/test_phase5_integration_api.py -q`
+  - Result: `2 passed`
+- ✅ `python -m pytest tests/smoke/test_service_smoke.py -q`
+  - Result: `1 passed`
+- ✅ `python -m pytest tests/llm_gate tests/test_phase5_integration_api.py tests/smoke/test_service_smoke.py -q`
+  - Result: `11 passed`
+- ⚠️ Deprecation warnings present for FastAPI `@app.on_event("startup")`; behavior is correct, but future refactor to lifespan API is recommended.
 
 ## Known Limitations
 - No automated test suite for `github-gate` yet (explicitly deferred by scope to later phase).

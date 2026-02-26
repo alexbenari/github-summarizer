@@ -5,6 +5,23 @@
 - Project: GitHub repository summarizer API
 - Mode: discussion/documentation only (no code implementation)
 
+## Latest Update (2026-02-25)
+- Added phase-5 integration implementation spec at `impl-process/phase5-integration.md`.
+- Added phase-5 coding-agent kickoff prompt at `impl-process/phase5-integration-kickoff.md`.
+- Refactored github entity list into single source of truth at `app/github_gate/entities.py` and reused in CLI/service path.
+- Removed hardcoded service-side requested-sections argument by adding `render_full_extraction_markdown(...)` in `app/github_gate/markdown_renderer.py`.
+- Test maintenance after refactor:
+  - updated `tests/test_phase5_integration_api.py` monkeypatch target to `render_full_extraction_markdown`
+  - updated `tests/smoke/test_github_gate_cli_live_smoke.py` to skip on transient GitHub/network upstream failures
+- Locked phase-5 decisions:
+  - explicit error-to-HTTP mapping across github-gate/repo-processor/llm-gate exceptions
+  - best-effort partial extraction for optional github categories
+  - service must fetch same entity set as github-gate CLI `--entities all`
+  - startup fail-fast validation via `ConfigValidator`
+  - console progress logging + per-request debug log file
+  - temporary milestone behavior: on repo-processor budget overflow, continue using overflowed/full extraction markdown instead of failing request
+- Phase-5 spec includes required interfaces, orchestration contract, logging contract, and minimum integration test requirements.
+
 ## What Was Updated
 - Expanded `docs/architecture-and-design.md` into an implementable design spec with:
   - API request/response contract and HTTP error mapping

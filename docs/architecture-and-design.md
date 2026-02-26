@@ -317,6 +317,3 @@ Security in logs:
   - large repo with aggressive truncation
   - upstream failure simulation
 
-### 11) Open Decisions to Finalize
-1. Whether to add optional GitHub token support in v1.1 for higher limits
-2. Whether to return optional confidence notes in API response (currently omitted)
