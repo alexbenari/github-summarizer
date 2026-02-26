@@ -60,12 +60,13 @@ Invalid for v1:
 ### 4) End-to-End Flow
 1. `service` validates request schema and normalizes the URL.
 2. `github-gate` verifies repo identity and visibility.
-3. `github-gate` fetches all configured repository entities in one pass (subject to github-gate byte limits) and emits a full extraction markdown payload.
+3. `github-gate` fetches all configured repository entities in one pass (subject to github-gate byte/file/depth/time limits and overall fetch-duration cap) and emits a full extraction markdown payload.
 4. `repo-processor` reads full extraction markdown and computes prompt repo-data budget from model context window.
-5. `repo-processor` applies deterministic truncation/allocation rules to produce prompt-ready markdown within budget.
-6. `llm-gate` sends structured prompt + processed repo markdown.
-7. `llm-gate` validates/parses model output into response schema.
-8. `service` returns normalized API response.
+5. `repo-processor` applies deterministic truncation/allocation rules (tree-first baseline truncation) to produce prompt-ready markdown.
+6. If `repo-processor` reports slight overflow, `service` still sends processed markdown (not full extraction markdown) and logs overflow delta.
+7. `llm-gate` sends structured prompt + processed repo markdown.
+8. `llm-gate` validates/parses model output into response schema.
+9. `service` returns normalized API response.
 
 ### 5) Module Design
 
@@ -118,6 +119,13 @@ Operational constraints:
   - max retries: `2` (up to 3 attempts total)
   - backoff: `0.5s`, then `1.0s` (with small jitter)
   - stop retries early if end-to-end request budget is almost exhausted
+- Extraction stop policies for large repositories:
+  - per-selector caps:
+    - build/package: `max_build_package_files`, `max_build_package_depth`, `max_build_package_duration_seconds`
+    - code: `max_code_files`, `max_code_depth`, `max_code_duration_seconds`
+  - overall optional-selector budget:
+    - `max_total_fetch_duration_seconds` (service-level skip of remaining optional selectors when exhausted)
+  - selectors emit explicit `stop_reason` warnings when a cap is reached
 
 `github-gate` output type (`RepoSnapshot`):
 - `owner`, `repo`, `default_branch`
@@ -144,6 +152,9 @@ Explicit `github-gate` interface (v1):
   - Also scan for `docs/` or `documentation/` directories and fetch contents within configured limits.
 - `get_tests(tree: list[TreeEntry], limits: GithubGateLimits) -> list[FileContent]`
   - Finds likely test folders/files and returns test contents up to configured limits.
+- `get_build_and_package_data(tree: list[TreeEntry], limits: GithubGateLimits) -> list[FileContent]`
+  - Returns build/package files up to configured limits.
+  - Prioritizes high-signal files near repo root and limits deep `Makefile` fan-out.
 - `get_code(tree: list[TreeEntry], limits: GithubGateLimits) -> list[FileContent]`
   - Returns likely main code files up to configured limits.
   - Attempts to include entry points first (`main.*`, `app.*`, `server.*`, common CLI entry files), then high-value core files.
@@ -182,8 +193,9 @@ Selection/truncation algorithm (v1):
 1. If full extraction markdown fits budget, pass it through unchanged.
 2. Otherwise always include `metadata`, `languages`, `tree`, `readme` first.
 3. If mandatory baseline exceeds budget:
-  - truncate README first to fit.
-  - if still over budget, truncate tree section deterministically from the end to fit.
+  - truncate `directory_tree` first, keeping BFS-prefix full lines until budget.
+  - if still over budget, truncate `readme`.
+  - if still over budget, truncate `language_stats`, then `repository_metadata`.
 4. For remaining budget, allocate capacity by weighted categories (default):
   - documentation `0.40`
   - tests `0.20`
@@ -197,6 +209,7 @@ Block-level truncation:
 - treat each `## File: ...` block as atomic until final partial block is needed
 - when partial truncation is required, trim from the end of content text, keep file header/source/byte metadata lines
 - always keep valid markdown structure
+- repository tree truncation is line-preserving BFS-prefix truncation (no partial-line slicing)
 
 #### D) `llm-gate` (model adapter)
 Responsibilities:
@@ -274,6 +287,13 @@ Guardrails:
   - `max_code_total_bytes`
   - `max_build_package_total_bytes`
   - `max_single_file_bytes` (safety cap)
+  - `max_build_package_files`
+  - `max_code_files`
+  - `max_build_package_depth`
+  - `max_code_depth`
+  - `max_build_package_duration_seconds`
+  - `max_code_duration_seconds`
+  - `max_total_fetch_duration_seconds`
 
 Environment variables:
 - `NEBIUS_API_KEY` (required)
@@ -287,11 +307,12 @@ Filename format:
 
 Recommended content order:
 1. request metadata (request id, repo url, timestamps)
-2. GitHub upstream calls + status + latency
-3. selection decisions (kept/skipped paths + reasons)
+2. GitHub stage-level telemetry (start/done/skip, latency, files/bytes, stop reasons)
+3. selection decisions and truncation notes (including original/target/final byte sizes)
 4. LLM upstream call metadata + latency
-5. parsed output + normalization notes
-6. final HTTP status
+5. LLM failure telemetry when applicable (`code`, `upstream_status`, `context`)
+6. parsed output + normalization notes
+7. final HTTP status
 
 Security in logs:
 - never log `NEBIUS_API_KEY`
@@ -304,6 +325,7 @@ Security in logs:
 - Fail fast on inaccessible repos (not found/private/inaccessible in v1 mode)
 - Return actionable error messages
 - Respect unauthenticated GitHub rate limits with clear 429/503 behavior
+- Enforce bounded extraction with file/depth/time stop policies for large repositories
 
 ### 10) Testing Strategy (design-level)
 - Unit tests:
@@ -316,4 +338,3 @@ Security in logs:
   - non-public/non-existent repos
   - large repo with aggressive truncation
   - upstream failure simulation
-

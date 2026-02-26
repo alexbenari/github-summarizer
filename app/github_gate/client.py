@@ -38,6 +38,7 @@ from .selectors import (
     looks_like_doc_path,
     looks_like_entrypoint,
     looks_like_test_path,
+    path_depth,
     sorted_bfs,
 )
 
@@ -302,6 +303,7 @@ class GithubGate:
             ordered_paths=[entry.path for entry in ordered],
             total_limit=limits.max_tests_total_bytes,
             single_limit=limits.max_single_file_bytes,
+            category="tests",
         )
 
     def get_code(self, tree: list[TreeEntry], limits: GithubGateLimits) -> list[FileContent]:
@@ -313,6 +315,7 @@ class GithubGate:
             and not looks_like_doc_path(entry.path)
             and not self.ignore_rules.should_ignore_path(entry.path)
             and is_likely_text_path(entry.path)
+            and path_depth(entry.path) <= limits.max_code_depth
         ]
         bfs = sorted_bfs(candidates)
         seed = [entry for entry in bfs if looks_like_entrypoint(entry.path)]
@@ -324,9 +327,39 @@ class GithubGate:
             ordered_paths=ordered_paths,
             total_limit=limits.max_code_total_bytes,
             single_limit=limits.max_single_file_bytes,
+            max_files=limits.max_code_files,
+            max_duration_seconds=limits.max_code_duration_seconds,
+            category="code",
         )
 
     def get_build_and_package_data(self, tree: list[TreeEntry], limits: GithubGateLimits) -> list[FileContent]:
+        high_signal_names = {
+            "pyproject.toml",
+            "requirements.txt",
+            "setup.py",
+            "setup.cfg",
+            "package.json",
+            "go.mod",
+            "cargo.toml",
+            "pom.xml",
+            "build.gradle",
+            "build.gradle.kts",
+            "dockerfile",
+            "docker-compose.yml",
+            "docker-compose.yaml",
+            ".gitlab-ci.yml",
+        }
+
+        def _keep_build_path(path: str) -> bool:
+            depth = path_depth(path)
+            if depth > limits.max_build_package_depth:
+                return False
+            filename = path.split("/")[-1].lower()
+            # Keep Makefile only at root or one level down to avoid huge monorepo fan-out.
+            if filename == "makefile" and depth > 1:
+                return False
+            return True
+
         candidates = [
             entry
             for entry in tree
@@ -334,12 +367,13 @@ class GithubGate:
             and looks_like_build_package_path(entry.path)
             and not self.ignore_rules.should_ignore_path(entry.path)
             and is_likely_text_path(entry.path)
+            and _keep_build_path(entry.path)
         ]
         ordered = sorted(
             candidates,
             key=lambda entry: (
-                0 if "/" not in entry.path else 1,
-                entry.path.count("/"),
+                path_depth(entry.path),
+                0 if entry.path.split("/")[-1].lower() in high_signal_names else 1,
                 entry.path.lower(),
             ),
         )
@@ -349,6 +383,9 @@ class GithubGate:
             ordered_paths=[entry.path for entry in ordered],
             total_limit=limits.max_build_package_total_bytes,
             single_limit=limits.max_single_file_bytes,
+            max_files=limits.max_build_package_files,
+            max_duration_seconds=limits.max_build_package_duration_seconds,
+            category="build_package",
         )
 
     def build_snapshot(
@@ -391,14 +428,28 @@ class GithubGate:
         ordered_paths: list[str],
         total_limit: int,
         single_limit: int,
+        max_files: Optional[int] = None,
+        max_duration_seconds: Optional[float] = None,
+        category: str = "selector",
     ) -> list[FileContent]:
         selected: list[FileContent] = []
         used = 0
+        started_ms = time.time() * 1000
         for path in ordered_paths:
             if path not in tree_map:
                 continue
             if used >= total_limit:
                 break
+            if max_files is not None and len(selected) >= max_files:
+                self.warnings.append(f"{category}: stop_reason=max_files_reached ({max_files})")
+                break
+            if max_duration_seconds is not None:
+                elapsed_seconds = (time.time() * 1000 - started_ms) / 1000.0
+                if elapsed_seconds >= max_duration_seconds:
+                    self.warnings.append(
+                        f"{category}: stop_reason=max_duration_reached ({max_duration_seconds}s)"
+                    )
+                    break
             entry = tree_map[path]
             if not entry.download_url:
                 continue

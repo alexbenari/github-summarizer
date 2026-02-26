@@ -29,7 +29,7 @@ Replace the current stub endpoint with a working orchestration flow:
 
 ## Scope (Out)
 - No API contract expansion beyond current request/response shape.
-- No additional crawler depth or GitHub domain restriction changes.
+- No additional GitHub domain restriction changes.
 - No v2 hardening tasks (full retry observability tests, chaos tests, etc.).
 
 ## Agreed Behavioral Decisions (Must Implement)
@@ -40,9 +40,13 @@ Replace the current stub endpoint with a working orchestration flow:
    - `metadata`, `languages`, `tree`, `readme`, `documentation`, `build_package`, `tests`, `code`.
 3. **Repo-processor overflow in this milestone**:
    - If `RepoProcessorBudgetError` occurs, do not fail request.
-   - Log warning and continue using full extraction markdown (overflow allowed for v1 milestone).
+   - Log warning and continue using processed markdown payload from the exception (overflow allowed for v1 milestone).
+   - Only fall back to full extraction markdown if no processed payload is attached.
 4. **Startup config validation**:
    - Add `ConfigValidator` and run it at app startup (fail fast if invalid).
+5. **Large-repo stopping policy**:
+   - Enforce bounded selector behavior for `build_package` and `code` using configured file-count/depth/duration caps.
+   - Enforce overall optional-selector fetch-duration cap; skip remaining optional selectors when exhausted, with explicit `stop_reason` logs/warnings.
 
 ## Required Interfaces (Must Exist)
 
@@ -54,7 +58,9 @@ Create `app/config_validator.py` with explicit API:
 Validation responsibilities:
 - Load and validate `LlmGateConfig` (mandatory model id + context window + numeric constraints).
 - Load and validate `RepoProcessorConfig`.
-- Load `GithubGateLimits` and validate all limits are positive integers.
+- Load `GithubGateLimits` and validate:
+  - integer limits are positive integers
+  - duration limits are positive numbers
 - Verify `NEBIUS_API_KEY` is present and non-empty at startup.
 - Raise typed/clear exception on failure with actionable message.
 
@@ -92,12 +98,14 @@ For each request:
    - `get_build_and_package_data`
    - `get_tests`
    - `get_code`
-5. Render full extraction markdown (same section order as github-gate CLI).
-6. Process via `repo_processor.process_markdown`.
-7. If processor succeeds, render processed markdown with `repo_processor.render_processed_markdown`.
-8. If `RepoProcessorBudgetError`, log warning and use full extraction markdown as llm input for this milestone.
-9. Call `LlmGate.summarize(markdown_text=...)`.
-10. Return:
+5. While fetching optional selectors, enforce configured stop policies (per-selector and total-fetch duration) and log stop reasons when triggered.
+6. Render full extraction markdown (same section order as github-gate CLI).
+7. Process via `repo_processor.process_markdown`.
+8. If processor succeeds, render processed markdown with `repo_processor.render_processed_markdown`.
+9. If `RepoProcessorBudgetError`, log warning and use processed markdown from exception payload as llm input for this milestone.
+   - if processed payload is absent, use full extraction markdown as fallback
+10. Call `LlmGate.summarize(markdown_text=...)`.
+11. Return:
 ```json
 {
   "summary": "...",
@@ -158,11 +166,16 @@ Error response body shape remains:
 Use concise progress lines similar to llm-gate CLI style and include request id:
 - `[service] request_start request_id=... repo_url=...`
 - `[service] github_fetch_start request_id=...`
+- `[service] github_fetch_stage_start request_id=... stage=...`
+- `[service] github_fetch_stage_done request_id=... stage=... duration_ms=... files=... bytes=...`
+- `[service] github_fetch_stage_skipped request_id=... stage=... stop_reason=max_total_fetch_duration_reached ...`
 - `[service] github_fetch_done request_id=... bytes=... warnings=...`
 - `[service] repo_process_start request_id=...`
 - `[service] repo_process_done request_id=... output_bytes=...`
+- `[service] repo_process_truncation request_id=... <truncation note with original/target/final bytes>`
 - `[service] llm_start request_id=... model=...`
 - `[service] llm_done request_id=...`
+- `[service] llm_error request_id=... code=... upstream_status=... context=...`
 - `[service] request_end request_id=... status=... latency_ms=...`
 
 ### Per-request debug log file (mandatory)
@@ -170,9 +183,9 @@ Write sequential log file under a local logs directory:
 - filename: `requested-[repo]-[timestamp]-[request-id].log`
 - include:
   1. request metadata
-  2. github fetch outcomes + partial failure warnings
-  3. processor stats / overflow fallback note
-  4. llm call metadata (no secrets)
+  2. github fetch outcomes + stage telemetry + partial failure/stop warnings
+  3. processor stats / truncation notes / overflow fallback note
+  4. llm call metadata and llm error context when failed (no secrets)
   5. final status and latency
 
 Never log API keys or Authorization headers.
@@ -194,7 +207,9 @@ Keep this phase focused; broader integration matrix stays in v2.
 2. Service path fetches the same entity set as github-gate CLI `all`.
 3. Partial github optional-category failures are logged and tolerated.
 4. Repo-processor overflow no longer fails request in this milestone.
-5. Error mapping is explicit and matches this spec.
-6. Startup fails fast with clear messages when config/env is invalid.
-7. Console and per-request file logging are present and usable.
-8. Added tests pass locally.
+5. On repo-processor overflow, service uses processed-overflow markdown (not full extraction markdown) when available.
+6. Error mapping is explicit and matches this spec.
+7. Startup fails fast with clear messages when config/env is invalid.
+8. Console and per-request file logging are present and usable.
+9. Large-repo stop-policy limits are enforced and logged with explicit stop reasons.
+10. Added tests pass locally.

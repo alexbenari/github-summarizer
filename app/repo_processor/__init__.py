@@ -7,7 +7,7 @@ from .errors import (
 )
 from .models import ExtractedRepoMarkdown, ProcessedRepoMarkdown, RepoProcessorConfig
 from .parser import parse_extraction_markdown, render_processed_markdown
-from .processor import process_markdown
+from .processor import estimate_prompt_tokens, process_markdown
 
 __all__ = [
     "ContextWindowLimitBookkeeper",
@@ -21,4 +21,5 @@ __all__ = [
     "parse_extraction_markdown",
     "render_processed_markdown",
     "process_markdown",
+    "estimate_prompt_tokens",
 ]

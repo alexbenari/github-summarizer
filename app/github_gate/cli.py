@@ -193,6 +193,13 @@ def _effective_limits(base: GithubGateLimits, args: argparse.Namespace) -> Githu
         max_code_total_bytes=args.max_code_total_bytes or base.max_code_total_bytes,
         max_build_package_total_bytes=args.max_build_package_total_bytes or base.max_build_package_total_bytes,
         max_single_file_bytes=args.max_single_file_bytes or base.max_single_file_bytes,
+        max_build_package_files=base.max_build_package_files,
+        max_code_files=base.max_code_files,
+        max_build_package_depth=base.max_build_package_depth,
+        max_code_depth=base.max_code_depth,
+        max_build_package_duration_seconds=base.max_build_package_duration_seconds,
+        max_code_duration_seconds=base.max_code_duration_seconds,
+        max_total_fetch_duration_seconds=base.max_total_fetch_duration_seconds,
     )
 
 

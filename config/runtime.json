@@ -25,6 +25,13 @@
     "max_tests_total_bytes": 1000000,
     "max_code_total_bytes": 4000000,
     "max_build_package_total_bytes": 2000000,
-    "max_single_file_bytes": 1000000
+    "max_single_file_bytes": 1000000,
+    "max_build_package_files": 80,
+    "max_code_files": 120,
+    "max_build_package_depth": 2,
+    "max_code_depth": 4,
+    "max_build_package_duration_seconds": 30,
+    "max_code_duration_seconds": 45,
+    "max_total_fetch_duration_seconds": 120
   }
 }

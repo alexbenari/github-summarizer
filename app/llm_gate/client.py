@@ -88,18 +88,27 @@ class LlmGate:
             except Exception as exc:  # noqa: BLE001
                 executor.shutdown(wait=False, cancel_futures=True)
                 status = _extract_status(exc)
+                error_context = _compose_upstream_context(base_context=context, exc=exc)
                 if status == 429:
-                    last_exc = LlmRateLimitError("LLM rate limit reached.", upstream_status=status, context=context)
+                    last_exc = LlmRateLimitError(
+                        "LLM rate limit reached.",
+                        upstream_status=status,
+                        context=error_context,
+                    )
                     should_retry = attempt < attempts
                 elif status in {502, 503, 504}:
                     last_exc = LlmUpstreamError(
                         "Retryable LLM upstream failure.",
                         upstream_status=status,
-                        context=context,
+                        context=error_context,
                     )
                     should_retry = attempt < attempts
                 elif status in NON_RETRYABLE_STATUSES:
-                    raise LlmUpstreamError("LLM upstream non-retryable failure.", upstream_status=status) from exc
+                    raise LlmUpstreamError(
+                        "LLM upstream non-retryable failure.",
+                        upstream_status=status,
+                        context=error_context,
+                    ) from exc
                 elif isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, OSError)):
                     last_exc = LlmUpstreamError(
                         "Network failure while calling LLM.",
@@ -237,6 +246,42 @@ def _extract_status(exc: Exception) -> Optional[int]:
             if isinstance(value, int):
                 return value
     return None
+
+
+def _compose_upstream_context(base_context: str, exc: Exception) -> str:
+    details = _extract_http_error_details(exc)
+    if not details:
+        return base_context
+    return f"{base_context}: {details}"
+
+
+def _extract_http_error_details(exc: Exception, max_chars: int = 600) -> Optional[str]:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+
+    response = exc.response
+    if response is None:
+        return None
+
+    body = ""
+    try:
+        content_type = str(response.headers.get("content-type", "")).lower()
+        if "application/json" in content_type:
+            body = json.dumps(response.json(), ensure_ascii=True)
+        else:
+            body = response.text
+    except Exception:  # noqa: BLE001
+        try:
+            body = response.text
+        except Exception:  # noqa: BLE001
+            body = ""
+
+    cleaned = " ".join(str(body).split()).strip()
+    if not cleaned:
+        return f"status={response.status_code}"
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars].rstrip() + "..."
+    return cleaned
 
 
 def summarize(markdown_text: str, options: LlmRequestOptions | None = None) -> SummaryResult:

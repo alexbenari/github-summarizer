@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from .models import ProcessedRepoMarkdown
 
 
 @dataclass
@@ -27,8 +30,14 @@ class RepoProcessorParseError(RepoProcessorError):
 
 
 class RepoProcessorBudgetError(RepoProcessorError):
-    def __init__(self, message: str, context: Optional[Any] = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        context: Optional[Any] = None,
+        processed: Optional["ProcessedRepoMarkdown"] = None,
+    ) -> None:
         super().__init__("repo_processor_budget_error", message, context)
+        self.processed = processed
 
 
 class RepoProcessorOutputError(RepoProcessorError):

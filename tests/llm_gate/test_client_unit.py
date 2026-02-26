@@ -75,6 +75,29 @@ def test_call_with_retry_maps_503_to_upstream_error() -> None:
     raise AssertionError("Expected LlmUpstreamError for HTTP 503.")
 
 
+def test_call_with_retry_maps_400_to_upstream_error_with_context() -> None:
+    gate = _make_gate()
+    request = httpx.Request("POST", "https://example.com")
+    response = httpx.Response(
+        400,
+        request=request,
+        json={"error": {"message": "prompt too long", "type": "invalid_request_error"}},
+    )
+
+    def op():
+        raise httpx.HTTPStatusError("bad request", request=request, response=response)
+
+    try:
+        gate._call_with_retry(op, gate.config, "chat_completions")
+    except LlmUpstreamError as exc:
+        assert exc.upstream_status == 400
+        assert isinstance(exc.context, str)
+        assert "chat_completions" in exc.context
+        assert "prompt too long" in exc.context
+        return
+    raise AssertionError("Expected LlmUpstreamError for HTTP 400.")
+
+
 def test_normalize_and_validate_rejects_non_string_fields() -> None:
     gate = _make_gate()
     invalid_payloads = [

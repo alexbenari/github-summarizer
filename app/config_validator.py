@@ -23,13 +23,26 @@ class ConfigValidator:
             raise ValueError("NEBIUS_API_KEY is required and must be non-empty.")
 
     def _validate_limits(self, limits: GithubGateLimits) -> None:
-        values = {
+        int_values = {
             "max_docs_total_bytes": limits.max_docs_total_bytes,
             "max_tests_total_bytes": limits.max_tests_total_bytes,
             "max_code_total_bytes": limits.max_code_total_bytes,
             "max_build_package_total_bytes": limits.max_build_package_total_bytes,
             "max_single_file_bytes": limits.max_single_file_bytes,
+            "max_build_package_files": limits.max_build_package_files,
+            "max_code_files": limits.max_code_files,
+            "max_build_package_depth": limits.max_build_package_depth,
+            "max_code_depth": limits.max_code_depth,
         }
-        for key, value in values.items():
+        for key, value in int_values.items():
             if int(value) <= 0:
                 raise ValueError(f"{key} must be a positive integer.")
+
+        float_values = {
+            "max_build_package_duration_seconds": limits.max_build_package_duration_seconds,
+            "max_code_duration_seconds": limits.max_code_duration_seconds,
+            "max_total_fetch_duration_seconds": limits.max_total_fetch_duration_seconds,
+        }
+        for key, value in float_values.items():
+            if float(value) <= 0:
+                raise ValueError(f"{key} must be a positive number.")

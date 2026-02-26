@@ -88,6 +88,13 @@ class GithubGateLimits:
     max_code_total_bytes: int = 400_000
     max_build_package_total_bytes: int = 200_000
     max_single_file_bytes: int = 100_000
+    max_build_package_files: int = 80
+    max_code_files: int = 120
+    max_build_package_depth: int = 2
+    max_code_depth: int = 4
+    max_build_package_duration_seconds: float = 30.0
+    max_code_duration_seconds: float = 45.0
+    max_total_fetch_duration_seconds: float = 120.0
 
     @classmethod
     def from_runtime_file(cls, path: str | Path = "config/runtime.json") -> "GithubGateLimits":
@@ -107,4 +114,15 @@ class GithubGateLimits:
                 section.get("max_build_package_total_bytes", cls.max_build_package_total_bytes)
             ),
             max_single_file_bytes=int(section.get("max_single_file_bytes", cls.max_single_file_bytes)),
+            max_build_package_files=int(section.get("max_build_package_files", cls.max_build_package_files)),
+            max_code_files=int(section.get("max_code_files", cls.max_code_files)),
+            max_build_package_depth=int(section.get("max_build_package_depth", cls.max_build_package_depth)),
+            max_code_depth=int(section.get("max_code_depth", cls.max_code_depth)),
+            max_build_package_duration_seconds=float(
+                section.get("max_build_package_duration_seconds", cls.max_build_package_duration_seconds)
+            ),
+            max_code_duration_seconds=float(section.get("max_code_duration_seconds", cls.max_code_duration_seconds)),
+            max_total_fetch_duration_seconds=float(
+                section.get("max_total_fetch_duration_seconds", cls.max_total_fetch_duration_seconds)
+            ),
         )

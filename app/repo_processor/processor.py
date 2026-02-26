@@ -57,28 +57,84 @@ def process_markdown(markdown_text: str, config: RepoProcessorConfig | None = No
     baseline_total = sum(baseline_sizes.values())
 
     if baseline_total > body_budget:
-        readme_other = baseline_total - baseline_sizes["readme"]
-        readme_allowance = max(0, body_budget - readme_other)
-        sections["readme"], readme_truncated = _truncate_for_field(
-            field_name="readme",
-            content=sections["readme"],
-            max_bytes=readme_allowance,
+        # Preserve metadata/languages/readme as long as possible; trim directory tree first.
+        original_tree_bytes = baseline_sizes["directory_tree"]
+        tree_other = baseline_total - baseline_sizes["directory_tree"]
+        tree_allowance = max(0, body_budget - tree_other)
+        sections["directory_tree"], tree_truncated = _truncate_for_field(
+            field_name="directory_tree",
+            content=sections["directory_tree"],
+            max_bytes=tree_allowance,
         )
-        if readme_truncated:
-            truncation_notes.append("README truncated to fit baseline budget.")
+        if tree_truncated:
+            final_tree_bytes = _utf8_len(sections["directory_tree"])
+            truncation_notes.append(
+                "directory_tree truncated "
+                f"(original_bytes={original_tree_bytes}, "
+                f"target_bytes={tree_allowance}, "
+                f"final_bytes={final_tree_bytes}, "
+                "strategy=bfs_prefix_lines)."
+            )
 
         baseline_sizes = {field: _utf8_len(sections[field]) for field in BASELINE_FIELDS}
         baseline_total = sum(baseline_sizes.values())
         if baseline_total > body_budget:
-            tree_other = baseline_total - baseline_sizes["directory_tree"]
-            tree_allowance = max(0, body_budget - tree_other)
-            sections["directory_tree"], tree_truncated = _truncate_for_field(
-                field_name="directory_tree",
-                content=sections["directory_tree"],
-                max_bytes=tree_allowance,
+            original_readme_bytes = baseline_sizes["readme"]
+            readme_other = baseline_total - baseline_sizes["readme"]
+            readme_allowance = max(0, body_budget - readme_other)
+            sections["readme"], readme_truncated = _truncate_for_field(
+                field_name="readme",
+                content=sections["readme"],
+                max_bytes=readme_allowance,
             )
-            if tree_truncated:
-                truncation_notes.append("Directory tree truncated from end to fit baseline budget.")
+            if readme_truncated:
+                final_readme_bytes = _utf8_len(sections["readme"])
+                truncation_notes.append(
+                    "readme truncated "
+                    f"(original_bytes={original_readme_bytes}, "
+                    f"target_bytes={readme_allowance}, "
+                    f"final_bytes={final_readme_bytes})."
+                )
+
+        baseline_sizes = {field: _utf8_len(sections[field]) for field in BASELINE_FIELDS}
+        baseline_total = sum(baseline_sizes.values())
+        if baseline_total > body_budget:
+            original_lang_bytes = baseline_sizes["language_stats"]
+            lang_other = baseline_total - baseline_sizes["language_stats"]
+            lang_allowance = max(0, body_budget - lang_other)
+            sections["language_stats"], lang_truncated = _truncate_for_field(
+                field_name="language_stats",
+                content=sections["language_stats"],
+                max_bytes=lang_allowance,
+            )
+            if lang_truncated:
+                final_lang_bytes = _utf8_len(sections["language_stats"])
+                truncation_notes.append(
+                    "language_stats truncated "
+                    f"(original_bytes={original_lang_bytes}, "
+                    f"target_bytes={lang_allowance}, "
+                    f"final_bytes={final_lang_bytes})."
+                )
+
+        baseline_sizes = {field: _utf8_len(sections[field]) for field in BASELINE_FIELDS}
+        baseline_total = sum(baseline_sizes.values())
+        if baseline_total > body_budget:
+            original_meta_bytes = baseline_sizes["repository_metadata"]
+            meta_other = baseline_total - baseline_sizes["repository_metadata"]
+            meta_allowance = max(0, body_budget - meta_other)
+            sections["repository_metadata"], meta_truncated = _truncate_for_field(
+                field_name="repository_metadata",
+                content=sections["repository_metadata"],
+                max_bytes=meta_allowance,
+            )
+            if meta_truncated:
+                final_meta_bytes = _utf8_len(sections["repository_metadata"])
+                truncation_notes.append(
+                    "repository_metadata truncated "
+                    f"(original_bytes={original_meta_bytes}, "
+                    f"target_bytes={meta_allowance}, "
+                    f"final_bytes={final_meta_bytes})."
+                )
 
         baseline_sizes = {field: _utf8_len(sections[field]) for field in BASELINE_FIELDS}
         baseline_total = sum(baseline_sizes.values())
@@ -97,12 +153,16 @@ def process_markdown(markdown_text: str, config: RepoProcessorConfig | None = No
 
     for field in OPTIONAL_FIELDS:
         target = alloc.get(field, 0)
+        original_bytes = _utf8_len(sections[field])
         sections[field], was_truncated = _truncate_for_field(field, sections[field], target)
         if was_truncated:
-            if target == 0:
-                truncation_notes.append(f"{field} truncated to zero due to budget.")
-            else:
-                truncation_notes.append(f"{field} truncated to allocated budget ({target} bytes).")
+            final_bytes = _utf8_len(sections[field])
+            truncation_notes.append(
+                f"{field} truncated "
+                f"(original_bytes={original_bytes}, "
+                f"target_bytes={target}, "
+                f"final_bytes={final_bytes})."
+            )
 
     processed = _build_processed(
         sections=sections,
@@ -112,14 +172,23 @@ def process_markdown(markdown_text: str, config: RepoProcessorConfig | None = No
         truncation_notes=truncation_notes,
     )
     if processed.output_total_utf8_bytes > max_repo_bytes:
+        overflow_bytes = processed.output_total_utf8_bytes - max_repo_bytes
         raise RepoProcessorBudgetError(
             "Processed markdown still exceeds max repo-data budget.",
             context={
                 "output_total_utf8_bytes": processed.output_total_utf8_bytes,
                 "max_repo_data_size_for_prompt_bytes": max_repo_bytes,
+                "overflow_bytes": overflow_bytes,
             },
+            processed=processed,
         )
     return processed
+
+
+def estimate_prompt_tokens(markdown_text: str, config: RepoProcessorConfig | None = None) -> int:
+    cfg = config or RepoProcessorConfig.from_runtime_file()
+    cfg.validate()
+    return int(math.ceil(_utf8_len(markdown_text) / cfg.bytes_per_token_estimate))
 
 
 def _build_initial_sections(parsed: ExtractedRepoMarkdown) -> dict[str, str]:
@@ -180,6 +249,8 @@ def _truncate_for_field(field_name: str, content: str, max_bytes: int) -> tuple[
         return "Truncated to zero", True
     if _utf8_len(content) <= max_bytes:
         return content, False
+    if field_name == "directory_tree":
+        return _truncate_directory_tree(content, max_bytes), True
     if field_name in BLOCK_TRUNCATED_FIELDS:
         return _truncate_file_blocks(content, max_bytes), True
     return _truncate_text(content, max_bytes), True
@@ -217,6 +288,31 @@ def _truncate_file_blocks(content: str, max_bytes: int) -> str:
         return "Truncated to zero"
     combined = "\n\n".join(selected).strip()
     return combined if combined else "Truncated to zero"
+
+
+def _truncate_directory_tree(content: str, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return "Truncated to zero"
+
+    lines = content.splitlines()
+    if not lines:
+        return "Truncated to zero"
+
+    selected: list[str] = []
+    used = 0
+    for line in lines:
+        line_bytes = _utf8_len(line)
+        sep_bytes = 1 if selected else 0
+        if used + sep_bytes + line_bytes > max_bytes:
+            break
+        if sep_bytes:
+            used += sep_bytes
+        selected.append(line)
+        used += line_bytes
+
+    if not selected:
+        return "Truncated to zero"
+    return "\n".join(selected)
 
 
 def _split_file_blocks(content: str) -> list[str]:
